@@ -76,3 +76,91 @@ void moveMotor(int dirPin, int stepPin, int enPin, bool direction, long steps) {
 
   digitalWrite(enPin, HIGH);            // 드라이버 비활성화
 }
+
+
+
+
+
+
+
+
+
+///////////////////////////////////
+
+
+#define DIR_X 2
+#define STEP_X 3
+#define EN_X 6
+
+#define DIR_Y 4
+#define STEP_Y 5
+#define EN_Y 7
+
+#define STEP_DELAY 800
+
+void setup() {
+  pinMode(DIR_X, OUTPUT);  pinMode(STEP_X, OUTPUT);  pinMode(EN_X, OUTPUT);
+  pinMode(DIR_Y, OUTPUT);  pinMode(STEP_Y, OUTPUT);  pinMode(EN_Y, OUTPUT);
+
+  digitalWrite(EN_X, HIGH);
+  digitalWrite(EN_Y, HIGH);
+
+  Serial.begin(9600);
+  delay(2000);  // 연결 대기 시간
+  Serial.println("[Arduino] READY");
+}
+
+void loop() {
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+
+    Serial.print("[Arduino] Received: ");
+    Serial.println(cmd);  // 🟢 수신된 명령어 출력
+
+    if (cmd == "HOME") {
+      Serial.println("[Arduino] HOMING triggered");
+      return;
+    }
+
+    int dix = -1, diy = -1;
+    long stx = 0, sty = 0;
+
+    int i1 = cmd.indexOf(',');
+    int i2 = cmd.indexOf(',', i1 + 1);
+    int i3 = cmd.indexOf(',', i2 + 1);
+
+    if (i1 > 0 && i2 > i1 && i3 > i2) {
+      dix = cmd.substring(0, i1).toInt();
+      diy = cmd.substring(i1 + 1, i2).toInt();
+      stx = cmd.substring(i2 + 1, i3).toInt();
+      sty = cmd.substring(i3 + 1).toInt();
+
+      Serial.print("[Arduino] Parsed: Xdir="); Serial.print(dix);
+      Serial.print(" Ydir="); Serial.print(diy);
+      Serial.print(" Xstep="); Serial.print(stx);
+      Serial.print(" Ystep="); Serial.println(sty);
+
+      moveMotor(DIR_X, STEP_X, EN_X, dix, stx);
+      delay(100);
+      moveMotor(DIR_Y, STEP_Y, EN_Y, diy, sty);
+    } else {
+      Serial.print("[Arduino] Parse error: ");
+      Serial.println(cmd);
+    }
+  }
+}
+
+void moveMotor(int dirPin, int stepPin, int enPin, bool direction, long steps) {
+  digitalWrite(enPin, LOW);
+  digitalWrite(dirPin, direction);
+
+  for (long i = 0; i < steps; i++) {
+    digitalWrite(stepPin, HIGH);
+    delayMicroseconds(STEP_DELAY);
+    digitalWrite(stepPin, LOW);
+    delayMicroseconds(STEP_DELAY);
+  }
+
+  digitalWrite(enPin, HIGH);
+}
