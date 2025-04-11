@@ -1,0 +1,227 @@
+# 자동입력
+import cv2
+import numpy as np
+import time
+import serial
+
+# === 설정값 ===
+FRAME_WIDTH = 1280
+FRAME_HEIGHT = 720
+CENTER_DOT = (FRAME_WIDTH // 2, FRAME_HEIGHT // 2)
+
+PIXEL_TO_MM = 0.26
+STEPS_PER_MM = 1600 / 2.0  # 1회전 = 2mm
+TOLERANCE_PX = 10
+MAX_STEPS = 3200
+
+SERIAL_PORT = "/dev/ttyACM1"
+BAUDRATE = 9600
+SIMULATION_MODE = False
+
+# === 상태 변수 ===
+log_buffer = []
+last_detected = None
+confirm_start_time = None
+confirmed_center = None
+already_moved = False
+tracking_stopped = False
+
+# === 로그 함수 ===
+def log(msg):
+    if len(log_buffer) == 0 or log_buffer[-1] != msg:
+        print(msg)
+        log_buffer.append(msg)
+        if len(log_buffer) > 15:
+            log_buffer.pop(0)
+
+def show_log_window():
+    log_img = np.ones((300, 600, 3), np.uint8) * 30
+    y = 30
+    for line in log_buffer[-12:]:
+        cv2.putText(log_img, line, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 1)
+        y += 22
+    cv2.imshow("Log Window", log_img)
+
+# === 모터 이동 함수 ===
+def move_stage(dx_pix, dy_pix):
+    dix = 1 if dx_pix >= 0 else 0
+    diy = 1 if dy_pix >= 0 else 0
+    dx_mm = abs(dx_pix) * PIXEL_TO_MM
+    dy_mm = abs(dy_pix) * PIXEL_TO_MM
+    dx_steps = min(int(dx_mm * STEPS_PER_MM), MAX_STEPS)
+    dy_steps = min(int(dy_mm * STEPS_PER_MM), MAX_STEPS)
+
+    command = f"{dix},{diy},{dx_steps},{dy_steps}\n"
+
+    if SIMULATION_MODE:
+        log(f"[SIM] {command.strip()}")
+        return
+
+    try:
+        with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=2) as ser:
+            time.sleep(0.3)
+            ser.write(command.encode())
+            log(f"[HW] Sent: {command.strip()}")
+            start = time.time()
+            while time.time() - start < 2:
+                if ser.in_waiting:
+                    res = ser.readline().decode(errors='ignore').strip()
+                    if res:
+                        log(f"[Arduino] {res}")
+    except Exception as e:
+        log(f"[ERR] Serial: {e}")
+
+# === 웨이퍼 중심 검출 ===
+def detect_wafer_center(frame):
+    zoom = cv2.resize(frame, None, fx=1.2, fy=1.2)
+    gray = cv2.cvtColor(zoom, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 1.2)
+    circles = cv2.HoughCircles(blur, cv2.HOUGH_GRADIENT, dp=1.2, minDist=300,
+                                param1=100, param2=30, minRadius=50, maxRadius=250)
+    if circles is not None:
+        circles = np.uint16(np.around(circles[0]))
+        filtered = [c for c in circles if 50 <= c[2] <= 250]
+        if not filtered:
+            return None
+        best = min(filtered, key=lambda c: np.linalg.norm(np.array([c[0], c[1]]) - np.array([zoom.shape[1]//2, zoom.shape[0]//2])))
+        x, y, r = [int(v / 1.2) for v in best]
+        log(f"[Wafer] center=({x},{y}) r={r}")
+        return (x, y)
+    return None
+
+def is_close(p1, p2, tolerance=TOLERANCE_PX):
+    return abs(p1[0] - p2[0]) <= tolerance and abs(p1[1] - p2[1]) <= tolerance
+
+# === 메인 루프 ===
+def main():
+    global last_detected, confirm_start_time, confirmed_center, already_moved, tracking_stopped
+
+    cap = cv2.VideoCapture(0)
+    cap.set(3, FRAME_WIDTH)
+    cap.set(4, FRAME_HEIGHT)
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            log("[Camera] Read Fail")
+            break
+
+        if tracking_stopped:
+            show_log_window()
+            cv2.imshow("Wafer Align", frame)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('r'):
+                log("[RESET] Tracking re-enabled")
+                tracking_stopped = False
+                confirmed_center = None
+                already_moved = False
+                last_detected = None
+                confirm_start_time = None
+                log_buffer.clear()
+            continue
+
+        wafer = detect_wafer_center(frame)
+
+        if wafer:
+            if last_detected and is_close(wafer, last_detected):
+                if confirm_start_time and time.time() - confirm_start_time > 1.0 and not confirmed_center:
+                    confirmed_center = wafer
+                    log("[Track] Center fixed")
+            else:
+                confirm_start_time = time.time()
+                last_detected = wafer
+
+        if confirmed_center and not already_moved:
+            dx = CENTER_DOT[0] - confirmed_center[0]
+            dy = CENTER_DOT[1] - confirmed_center[1]
+            log(f"[Offset] dx={dx}, dy={dy}")
+            if abs(dx) > TOLERANCE_PX or abs(dy) > TOLERANCE_PX:
+                move_stage(dx, dy)
+            else:
+                log("[Align] Already centered")
+            already_moved = True
+            tracking_stopped = True
+
+        if wafer:
+            cv2.circle(frame, wafer, 5, (0,255,0), -1)
+            cv2.circle(frame, CENTER_DOT, 5, (0,0,255), -1)
+            cv2.line(frame, wafer, CENTER_DOT, (255,0,0), 2)
+
+        show_log_window()
+        cv2.imshow("Wafer Align", frame)
+
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            break
+        elif key == ord('r'):
+            log("[RESET] Manual reset")
+            log_buffer.clear()
+            last_detected = None
+            confirm_start_time = None
+            confirmed_center = None
+            already_moved = False
+            tracking_stopped = False
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    main()
+
+
+# 수동입력
+import serial
+import time
+
+# === 설정값 ===
+PIXEL_TO_MM = 0.26
+LEAD_MM = 2.0
+STEPS_PER_REV = 1000
+MICROSTEPS = 16
+STEPS_PER_MM = (STEPS_PER_REV * MICROSTEPS) / LEAD_MM
+
+SERIAL_PORT = "/dev/ttyACM0"
+BAUDRATE = 9600
+
+# === 사용자 입력 ===
+x = int(input("X 좌표 입력: "))   # 예: 100
+y = int(input("Y 좌표 입력: "))   # 예: -100
+
+# === 방향 계산 ===
+dix = 1 if x >= 0 else 0
+diy = 1 if y >= 0 else 0
+
+# === 거리 계산 ===
+dx_mm = abs(x) * PIXEL_TO_MM
+dy_mm = abs(y) * PIXEL_TO_MM
+
+# === 스텝 수 계산 ===
+dx_steps = int(dx_mm * STEPS_PER_MM)
+dy_steps = int(dy_mm * STEPS_PER_MM)
+
+# === 명령 생성 ===
+command = f"{dix},{diy},{dx_steps},{dy_steps}\n"
+
+print(f"[Python] Prepared Command: {command.strip()}")
+
+try:
+    arduino = serial.Serial(SERIAL_PORT, BAUDRATE, timeout=1)
+    time.sleep(2)  # 시리얼 연결 안정화 대기
+
+    arduino.write(command.encode('utf-8'))
+    print(f"[Python] Sent: {command.strip()}")
+
+    # === 아두이노 응답 읽기 (최대 10초간 대기) ===
+    print("[Python] Waiting for Arduino response...\n")
+    start_time = time.time()
+    while time.time() - start_time < 10:
+        if arduino.in_waiting:
+            line = arduino.readline().decode('utf-8', errors='ignore').strip()
+            if line:
+                print(f"[Arduino] {line}")
+
+except Exception as e:
+    print(f"[ERROR] {e}")
+
+finally:
+    arduino.close()
