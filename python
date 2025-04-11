@@ -1,24 +1,21 @@
-# 자동입력
 import cv2
 import numpy as np
 import time
 import serial
 
-# === 설정값 ===
+# 설정값
 FRAME_WIDTH = 1280
 FRAME_HEIGHT = 720
 CENTER_DOT = (FRAME_WIDTH // 2, FRAME_HEIGHT // 2)
-
 PIXEL_TO_MM = 0.26
-STEPS_PER_MM = 1600 / 2.0  # 1회전 = 2mm
+STEPS_PER_MM = 1600 / 2.0  # 리드 2.0mm
 TOLERANCE_PX = 10
-MAX_STEPS = 3200
-
-SERIAL_PORT = "/dev/ttyACM1"
+MAX_STEPS = 9999999999
+SERIAL_PORT = "/dev/ttyACM0"
 BAUDRATE = 9600
 SIMULATION_MODE = False
 
-# === 상태 변수 ===
+# 상태 변수
 log_buffer = []
 last_detected = None
 confirm_start_time = None
@@ -26,7 +23,6 @@ confirmed_center = None
 already_moved = False
 tracking_stopped = False
 
-# === 로그 함수 ===
 def log(msg):
     if len(log_buffer) == 0 or log_buffer[-1] != msg:
         print(msg)
@@ -42,7 +38,6 @@ def show_log_window():
         y += 22
     cv2.imshow("Log Window", log_img)
 
-# === 모터 이동 함수 ===
 def move_stage(dx_pix, dy_pix):
     dix = 1 if dx_pix >= 0 else 0
     diy = 1 if dy_pix >= 0 else 0
@@ -58,20 +53,22 @@ def move_stage(dx_pix, dy_pix):
         return
 
     try:
-        with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=2) as ser:
-            time.sleep(0.3)
+        with serial.Serial(SERIAL_PORT, BAUDRATE, timeout=3) as ser:
+            time.sleep(2)  # ✅ 아두이노가 재시작한 경우 대비
+            ser.flushInput()  # 이전 버퍼 제거
             ser.write(command.encode())
             log(f"[HW] Sent: {command.strip()}")
+            time.sleep(0.3)
             start = time.time()
-            while time.time() - start < 2:
+            while time.time() - start < 3:
                 if ser.in_waiting:
                     res = ser.readline().decode(errors='ignore').strip()
                     if res:
                         log(f"[Arduino] {res}")
+                        break
     except Exception as e:
         log(f"[ERR] Serial: {e}")
 
-# === 웨이퍼 중심 검출 ===
 def detect_wafer_center(frame):
     zoom = cv2.resize(frame, None, fx=1.2, fy=1.2)
     gray = cv2.cvtColor(zoom, cv2.COLOR_BGR2GRAY)
@@ -81,7 +78,7 @@ def detect_wafer_center(frame):
     if circles is not None:
         circles = np.uint16(np.around(circles[0]))
         filtered = [c for c in circles if 50 <= c[2] <= 250]
-        if not filtered:
+        if len(filtered) == 0:
             return None
         best = min(filtered, key=lambda c: np.linalg.norm(np.array([c[0], c[1]]) - np.array([zoom.shape[1]//2, zoom.shape[0]//2])))
         x, y, r = [int(v / 1.2) for v in best]
@@ -92,7 +89,6 @@ def detect_wafer_center(frame):
 def is_close(p1, p2, tolerance=TOLERANCE_PX):
     return abs(p1[0] - p2[0]) <= tolerance and abs(p1[1] - p2[1]) <= tolerance
 
-# === 메인 루프 ===
 def main():
     global last_detected, confirm_start_time, confirmed_center, already_moved, tracking_stopped
 
@@ -109,8 +105,7 @@ def main():
         if tracking_stopped:
             show_log_window()
             cv2.imshow("Wafer Align", frame)
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('r'):
+            if cv2.waitKey(1) & 0xFF == ord('r'):
                 log("[RESET] Tracking re-enabled")
                 tracking_stopped = False
                 confirmed_center = None
@@ -167,61 +162,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-# 수동입력
-import serial
-import time
-
-# === 설정값 ===
-PIXEL_TO_MM = 0.26
-LEAD_MM = 2.0
-STEPS_PER_REV = 1000
-MICROSTEPS = 16
-STEPS_PER_MM = (STEPS_PER_REV * MICROSTEPS) / LEAD_MM
-
-SERIAL_PORT = "/dev/ttyACM0"
-BAUDRATE = 9600
-
-# === 사용자 입력 ===
-x = int(input("X 좌표 입력: "))   # 예: 100
-y = int(input("Y 좌표 입력: "))   # 예: -100
-
-# === 방향 계산 ===
-dix = 1 if x >= 0 else 0
-diy = 1 if y >= 0 else 0
-
-# === 거리 계산 ===
-dx_mm = abs(x) * PIXEL_TO_MM
-dy_mm = abs(y) * PIXEL_TO_MM
-
-# === 스텝 수 계산 ===
-dx_steps = int(dx_mm * STEPS_PER_MM)
-dy_steps = int(dy_mm * STEPS_PER_MM)
-
-# === 명령 생성 ===
-command = f"{dix},{diy},{dx_steps},{dy_steps}\n"
-
-print(f"[Python] Prepared Command: {command.strip()}")
-
-try:
-    arduino = serial.Serial(SERIAL_PORT, BAUDRATE, timeout=1)
-    time.sleep(2)  # 시리얼 연결 안정화 대기
-
-    arduino.write(command.encode('utf-8'))
-    print(f"[Python] Sent: {command.strip()}")
-
-    # === 아두이노 응답 읽기 (최대 10초간 대기) ===
-    print("[Python] Waiting for Arduino response...\n")
-    start_time = time.time()
-    while time.time() - start_time < 10:
-        if arduino.in_waiting:
-            line = arduino.readline().decode('utf-8', errors='ignore').strip()
-            if line:
-                print(f"[Arduino] {line}")
-
-except Exception as e:
-    print(f"[ERROR] {e}")
-
-finally:
-    arduino.close()
