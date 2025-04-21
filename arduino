@@ -16,7 +16,7 @@ void setup() {
   digitalWrite(EN_Y, HIGH);
 
   Serial.begin(9600);
-  delay(2000);  // 연결 대기 시간
+  delay(2000);
   Serial.println("[Arduino] READY");
 }
 
@@ -26,7 +26,7 @@ void loop() {
     cmd.trim();
 
     Serial.print("[Arduino] Received: ");
-    Serial.println(cmd);  // 🟢 수신된 명령어 출력
+    Serial.println(cmd);
 
     if (cmd == "HOME") {
       Serial.println("[Arduino] HOMING triggered");
