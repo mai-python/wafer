@@ -3,7 +3,6 @@ import numpy as np
 import time
 import serial
 
-# 설정값
 FRAME_WIDTH = 1920
 FRAME_HEIGHT = 1080
 PIXEL_TO_MM = 0.1
@@ -14,7 +13,6 @@ SERIAL_PORT = "/dev/ttyACM0"
 BAUDRATE = 9600
 SIMULATION_MODE = False
 
-# 상태 변수
 log_buffer = []
 last_detected = None
 confirm_start_time = None
@@ -69,48 +67,35 @@ def move_stage(dx_pix, dy_pix):
         log(f"[ERR] Serial: {e}")
 
 def detect_wafer_center(frame):
-    """
-    4인치 웨이퍼가 작게 보이는 경우에도 잘 잡히도록 
-    전처리 및 HoughCircles 파라미터를 조정한 함수
-    """
-    # 1. 원본을 1.5배 확대
+    
     zoom = cv2.resize(frame, None, fx=1.5, fy=1.5)
-
-    # 2. 흑백 변환 후 미디언 블러로 노이즈 감소
     gray = cv2.cvtColor(zoom, cv2.COLOR_BGR2GRAY)
     blur = cv2.medianBlur(gray, 5)
-
-    # 3. 모폴로지 연산으로 작은 잡음 제거
     kernel = np.ones((3, 3), np.uint8)
     opened = cv2.morphologyEx(blur, cv2.MORPH_OPEN, kernel)
 
-    # 4. HoughCircles로 원 탐지
     circles = cv2.HoughCircles(
         opened,
         cv2.HOUGH_GRADIENT,
         dp=1.2,
         minDist=200,
         param1=100,
-        param2=25,   # 값이 낮을수록 (예:20) 더 많은 원을 검출 → 민감도 증가
+        param2=25,   
         minRadius=20,
         maxRadius=350
     )
 
     if circles is not None:
         circles = np.uint16(np.around(circles[0]))
-        # 5. minRadius~maxRadius 범위 내의 원만 필터링 (추가 안전장치)
         filtered = [c for c in circles if 20 <= c[2] <= 350]
         if len(filtered) == 0:
             return None
 
-        # 6. 프레임 중앙에 가장 가까운 원 선택
         center_zoom = (zoom.shape[1] // 2, zoom.shape[0] // 2)  # 확대된 좌표계
         best = min(
             filtered,
             key=lambda c: np.linalg.norm(np.array([c[0], c[1]]) - np.array(center_zoom))
         )
-
-        # 7. 원래 크기로 보정
         x, y, r = [int(v / 1.5) for v in best]
 
         log(f"[Wafer] center=({x},{y}) r={r}")
@@ -121,9 +106,6 @@ def is_close(p1, p2, tolerance=TOLERANCE_PX):
     return abs(p1[0] - p2[0]) <= tolerance and abs(p1[1] - p2[1]) <= tolerance
 
 def quadrant(dx, dy):
-    """
-    dx, dy 부호에 따른 사분면
-    """
     if dx > 0 and dy > 0:
         return "1사분면"
     elif dx > 0 and dy < 0:
@@ -142,7 +124,7 @@ def main():
     cap.set(3, FRAME_WIDTH)
     cap.set(4, FRAME_HEIGHT)
 
-    dx = dy = 0  # 초기값 선언
+    dx = dy = 0 
 
     while True:
         ret, frame = cap.read()
@@ -150,7 +132,6 @@ def main():
             log("[Camera] Read Fail")
             break
 
-        # 프레임 중앙
         CENTER_DOT = (frame.shape[1] // 2, frame.shape[0] // 2)
 
         if tracking_stopped:
@@ -166,10 +147,8 @@ def main():
                 log_buffer.clear()
             continue
 
-        # 웨이퍼 검출
         wafer = detect_wafer_center(frame)
 
-        # 확인 로직
         if wafer:
             if last_detected and is_close(wafer, last_detected):
                 if confirm_start_time and (time.time() - confirm_start_time > 1.0) and not confirmed_center:
@@ -179,7 +158,6 @@ def main():
                 confirm_start_time = time.time()
                 last_detected = wafer
 
-        # 확정된 웨이퍼 중심이 있고, 아직 스테이지 이동을 안 했다면 이동
         if confirmed_center and not already_moved:
             TARGET_DOT = confirmed_center
             dx = CENTER_DOT[0] - TARGET_DOT[0]
@@ -194,14 +172,11 @@ def main():
             already_moved = True
             tracking_stopped = True
 
-        # 시각화
         if wafer:
-            # 웨이퍼 중심(녹색), 프레임 중앙(빨강), 그 사이 선(파랑)
             cv2.circle(frame, wafer, 5, (0,255,0), -1)
             cv2.circle(frame, CENTER_DOT, 5, (0,0,255), -1)
             cv2.line(frame, wafer, CENTER_DOT, (255,0,0), 2)
 
-            # dx/dy 텍스트 표시
             distance_text = f"dx={dx:+}, dy={dy:+}"
             cv2.putText(frame, distance_text, (CENTER_DOT[0] + 20, CENTER_DOT[1] + 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,255), 2)
